@@ -294,16 +294,16 @@ html,body{height:100%;font-family:'Segoe UI',system-ui,sans-serif;font-size:13px
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
         Seguimiento <span class="nav-badge" id="badge-seg">0</span>
       </div>
-      <div class="nav-it" onclick="goScreen('auditoria',this)">
+      <div class="nav-sec" id="nav-sec-admin" style="display:none">Admin</div>
+      <div class="nav-it" id="nav-auditoria" style="display:none" onclick="goScreen('auditoria',this)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg>
         Auditoría
       </div>
-      <div class="nav-sec" id="nav-sec-admin" style="display:none">Admin</div>
       <div class="nav-it" id="nav-usuarios" style="display:none" onclick="goScreen('usuarios',this)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
         Gestión usuarios
       </div>
-      <div class="nav-it" onclick="goScreen('est',this)">
+      <div class="nav-it" id="nav-estados" style="display:none" onclick="goScreen('est',this)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/></svg>
         Estados
       </div>
@@ -614,7 +614,9 @@ function iniciarApp() {
   // Admin: mostrar sección admin
   if(curUser.rol==='admin'){
     document.getElementById('nav-sec-admin').style.display  = '';
+    document.getElementById('nav-auditoria').style.display  = '';
     document.getElementById('nav-usuarios').style.display   = '';
+    document.getElementById('nav-estados').style.display    = '';
   }
   // Init
   document.getElementById('fped').value = new Date().toISOString().split('T')[0];
@@ -641,6 +643,10 @@ async function registrarAuditoria(tabla, registroId, accion, detalle={}) {
 // NAVEGACIÓN
 // ══════════════════════════════════════════════════════════
 function goScreen(name, el) {
+  // Proteger pantallas solo-admin
+  if(['auditoria','usuarios','est'].includes(name) && curUser.rol!=='admin'){
+    alert('Acceso restringido a administradores.'); return;
+  }
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.querySelectorAll('.nav-it').forEach(n=>n.classList.remove('on'));
   document.getElementById('screen-'+name).classList.add('active');
@@ -872,23 +878,31 @@ async function aceptarCotizacion() {
 async function cargarMisCotizaciones() {
   document.getElementById('mis-cot-content').innerHTML='<div style="padding:2rem;text-align:center;color:var(--tx2)">Cargando...</div>';
   const query = curUser.rol==='admin'
-    ? sb.from('cotizaciones').select('*,usuarios!cotizaciones_creado_por_fkey(nombre)').order('creado_en',{ascending:false})
-    : sb.from('cotizaciones').select('*,usuarios!cotizaciones_creado_por_fkey(nombre)').eq('creado_por',curUser.id).order('creado_en',{ascending:false});
+    ? sb.from('cotizaciones').select('*').order('creado_en',{ascending:false})
+    : sb.from('cotizaciones').select('*').eq('creado_por',curUser.id).order('creado_en',{ascending:false});
   const {data,error} = await query;
   if(error||!data||!data.length){
     document.getElementById('mis-cot-content').innerHTML='<div class="empty"><p>No hay cotizaciones todavía.</p><small>Creá una desde "Nueva cotización".</small></div>';
     return;
   }
+  // Traer nombres de usuarios en una sola query
+  const uids=[...new Set(data.map(c=>c.creado_por).filter(Boolean))];
+  let uMap={};
+  if(uids.length){
+    const {data:uData}=await sb.from('usuarios').select('id,nombre').in('id',uids);
+    if(uData) uData.forEach(u=>uMap[u.id]=u.nombre);
+  }
   document.getElementById('mis-cot-content').innerHTML=`<div class="ov"><table class="tt">
     <thead><tr><th>N° Pedido</th><th>Descripción</th><th>Creado por</th><th>Fecha</th><th>Estado</th><th>Acciones</th></tr></thead>
     <tbody>${data.map(c=>{
       cotCache[c.id] = c;
+      const creadorNombre = uMap[c.creado_por]||c.creado_por||'—';
       return `<tr>
       <td style="font-weight:700">${esc(c.nro_pedido)}</td>
       <td>${esc(c.descripcion||'—')}</td>
       <td><span style="display:inline-flex;align-items:center;gap:5px">
-        <span style="width:22px;height:22px;border-radius:50%;background:var(--ac);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700">${(c.usuarios?.nombre||'?').charAt(0)}</span>
-        ${esc(c.usuarios?.nombre||'—')}
+        <span style="width:22px;height:22px;border-radius:50%;background:var(--ac);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700">${creadorNombre.charAt(0).toUpperCase()}</span>
+        ${esc(creadorNombre)}
       </span></td>
       <td>${c.fecha||'—'}</td>
       <td><span class="st ${stCls(c.estado)}">${esc(c.estado)}</span></td>
@@ -917,20 +931,33 @@ async function eliminarCotizacion(id) {
 async function cargarSeguimiento() {
   document.getElementById('seg-content').innerHTML='<div style="padding:2rem;text-align:center;color:var(--tx2)">Cargando...</div>';
   const {data,error} = await sb.from('seguimiento')
-    .select('*,usuarios!seguimiento_creado_por_fkey(nombre)')
+    .select('*')
     .order('creado_en',{ascending:false});
   if(error||!data||!data.length){
     document.getElementById('seg-content').innerHTML='<div class="empty"><p>No hay pedidos en seguimiento todavía.</p></div>';
     return;
   }
+  // Traer nombres de usuarios
+  const uids2=[...new Set(data.map(p=>p.creado_por).filter(Boolean))];
+  let uMap2={};
+  if(uids2.length){
+    const {data:uData2}=await sb.from('usuarios').select('id,nombre').in('id',uids2);
+    if(uData2) uData2.forEach(u=>uMap2[u.id]=u.nombre);
+  }
   document.getElementById('seg-content').innerHTML=`<div class="ov"><table class="tt">
-    <thead><tr><th>N° Pedido</th><th>Descripción</th><th>Creado por</th><th>Proveedor elegido</th><th>Monto</th><th>Estado</th><th>Cambio</th><th>Cond. Pago</th><th>N° OC</th><th style="width:80px">Acciones</th></tr></thead>
-    <tbody>${data.map((p,i)=>`<tr>
+    <thead><tr><th>N° Pedido</th><th>Descripción</th><th>Cargado por</th><th>Proveedor elegido</th><th>Monto</th><th>Estado</th><th>Cambio</th><th>Cond. Pago</th><th>N° OC</th><th>Última modificación</th><th style="width:60px">Acciones</th></tr></thead>
+    <tbody>${data.map((p,i)=>{
+      const creadorNombre2 = uMap2[p.creado_por]||p.creado_por||'—';
+      const histCambios = p.hist_cambios||[];
+      const ultMod = histCambios.length ? histCambios[histCambios.length-1] : null;
+      const modNombre = ultMod ? ultMod.usuario : (p.modificado_nombre||null);
+      const modFecha  = ultMod ? ultMod.fecha   : (p.actualizado_en ? new Date(p.actualizado_en).toLocaleDateString('es-AR') : null);
+      return `<tr>
       <td style="font-weight:700">${esc(p.nro_pedido)}</td>
       <td>${esc(p.descripcion||'—')}</td>
       <td><span style="display:inline-flex;align-items:center;gap:5px">
-        <span style="width:22px;height:22px;border-radius:50%;background:var(--ac);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700">${(p.usuarios?.nombre||'?').charAt(0)}</span>
-        ${esc(p.usuarios?.nombre||'—')}
+        <span style="width:22px;height:22px;border-radius:50%;background:var(--ac);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700">${creadorNombre2.charAt(0).toUpperCase()}</span>
+        ${esc(creadorNombre2)}
       </span></td>
       <td>${esc(p.prov_sel||'—')}</td>
       <td style="font-weight:700">${p.monto?fmt(p.monto):'—'}</td>
@@ -938,10 +965,14 @@ async function cargarSeguimiento() {
       <td>${p.is_chg?`<span class="chg-yes" title="${esc(p.motivo_chg||'')}">⚠ Cambiado</span>`:'<span class="chg-no">✓ Menor</span>'}</td>
       <td>${esc(p.cond_pago||'—')}</td>
       <td>${esc(p.nro_oc||'—')}</td>
+      <td>${modNombre
+        ? `<span style="font-size:11px;font-weight:600;color:var(--tx)">${esc(modNombre)}</span><br><span style="font-size:10px;color:var(--tx2)">${esc(modFecha||'')}</span>`
+        : '<span style="color:var(--tx3);font-size:11px">Sin cambios</span>'
+      }</td>
       <td><div style="display:flex;gap:3px">
         <button class="btn btn-xs btn-gh" onclick="openModSeg('${p.id}')">✏</button>
       </div></td>
-    </tr>`).join('')}</tbody>
+    </tr>`;}).join('')}</tbody>
   </table></div>`;
   document.getElementById('badge-seg').textContent=data.length;
   document.getElementById('badge-seg').style.display='inline';
@@ -1096,7 +1127,9 @@ async function saveMod(){
     fecha_autor: document.getElementById('m-fecha')?.value||null,
     obs_track: document.getElementById('m-obs')?.value,
     justif:    document.getElementById('m-justif')?.value,
-    actualizado_en: new Date().toISOString()
+    actualizado_en: new Date().toISOString(),
+    modificado_por: curUser.id,
+    modificado_nombre: curUser.nombre
   };
 
   // Cambio de proveedor
