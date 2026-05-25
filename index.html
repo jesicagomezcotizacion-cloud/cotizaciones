@@ -1132,13 +1132,14 @@ async function saveMod(){
     modificado_nombre: curUser.nombre
   };
 
+  // Traer datos actuales del registro (nro_pedido + hist_cambios si hay cambio de proveedor)
+  const {data:curr} = await sb.from('seguimiento').select('nro_pedido,hist_cambios,prov_sel,monto').eq('id',editSegId).single();
+  const nroPedido = curr?.nro_pedido||'—';
+
   // Cambio de proveedor
   if(mProvSelName){
     const motivo = (document.getElementById('m-motivo-nuevo')?.value||'').trim();
     if(!motivo){ alert('Ingresá el motivo del cambio de proveedor.'); return; }
-
-    // Traer hist_cambios actual
-    const {data:curr} = await sb.from('seguimiento').select('hist_cambios,prov_sel,monto').eq('id',editSegId).single();
     const hist = curr?.hist_cambios||[];
     hist.push({
       deProv: curr?.prov_sel, aProv: mProvSelName,
@@ -1153,12 +1154,16 @@ async function saveMod(){
     updates.hist_cambios = hist;
     if(document.getElementById('m-nueva-cond')?.value) updates.cond_pago = document.getElementById('m-nueva-cond').value;
     if(document.getElementById('m-nuevo-plazo')?.value) updates.plazo    = document.getElementById('m-nuevo-plazo').value;
-    await registrarAuditoria('seguimiento', editSegId, 'cambiar_proveedor', {deProv:curr?.prov_sel, aProv:mProvSelName, motivo});
+    await registrarAuditoria('seguimiento', editSegId, 'cambiar_proveedor', {
+      nro_pedido: nroPedido, deProv: curr?.prov_sel, aProv: mProvSelName, motivo
+    });
   }
 
   const {error} = await sb.from('seguimiento').update(updates).eq('id', editSegId);
   if(error){ alert('Error al guardar: '+error.message); return; }
-  await registrarAuditoria('seguimiento', editSegId, 'editar', {estado:updates.estado});
+  await registrarAuditoria('seguimiento', editSegId, 'editar', {
+    nro_pedido: nroPedido, estado: updates.estado, nro_oc: updates.nro_oc||''
+  });
   closeMod(); showSaved(); cargarSeguimiento();
 }
 
@@ -1173,25 +1178,44 @@ async function cargarAuditoria(){
 }
 function renderAudit(data){
   if(!data.length){ document.getElementById('audit-content').innerHTML='<p style="color:var(--tx2)">Sin registros.</p>'; return; }
-  document.getElementById('audit-content').innerHTML = data.map(a=>`
+  document.getElementById('audit-content').innerHTML = data.map(a=>{
+    const d = a.detalle||{};
+    // Línea principal: acción + N° pedido si existe
+    const nro = d.nro_pedido ? `<span style="background:var(--acl);color:var(--ac);border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;margin-left:6px">${esc(d.nro_pedido)}</span>` : '';
+    // Detalle secundario según acción
+    let sub = '';
+    if(a.accion==='editar'){
+      const partes = [];
+      if(d.estado) partes.push(`Estado → <strong>${esc(d.estado)}</strong>`);
+      if(d.nro_oc) partes.push(`N° OC: <strong>${esc(d.nro_oc)}</strong>`);
+      sub = partes.join(' · ');
+    } else if(a.accion==='cambiar_proveedor'){
+      sub = `De <strong>${esc(d.deProv||'—')}</strong> → <strong>${esc(d.aProv||'—')}</strong>${d.motivo?' · Motivo: '+esc(d.motivo):''}`;
+    } else if(a.accion==='crear'){
+      sub = d.nombre ? `Usuario: <strong>${esc(d.nombre)}</strong> (${esc(d.rol||'')})` : (d.estado?`Estado: <strong>${esc(d.estado)}</strong>`:'');
+    } else if(a.accion==='aceptar'){
+      const partes = [];
+      if(d.prov_sel) partes.push(`Proveedor: <strong>${esc(d.prov_sel)}</strong>`);
+      if(d.monto) partes.push(`Monto: <strong>${fmt(d.monto)}</strong>`);
+      sub = partes.join(' · ');
+    } else if(a.accion==='eliminar'){
+      sub = d.nombre ? `Usuario eliminado: <strong>${esc(d.nombre)}</strong>` : '';
+    }
+    return `
     <div class="audit-row">
       <div class="audit-dot audit-${a.accion||'editar'}"></div>
       <div style="flex:1">
-        <div style="font-size:12px;font-weight:600;color:var(--tx);margin-bottom:2px">
-          ${accionLabel(a.accion)} — ${esc(a.tabla)}
-          ${a.detalle?.nro_pedido?` <span style="color:var(--tx2)">· ${esc(a.detalle.nro_pedido)}</span>`:''}
+        <div style="font-size:12px;font-weight:600;color:var(--tx);margin-bottom:3px">
+          ${accionLabel(a.accion)}${nro}
         </div>
-        <div style="font-size:11px;color:var(--tx2)">
-          ${a.detalle?.prov_sel?`Proveedor: ${esc(a.detalle.prov_sel)} · `:'' }
-          ${a.detalle?.motivo?`Motivo: ${esc(a.detalle.motivo)} · `:''}
-          ${a.detalle?.estado?`Estado: ${esc(a.detalle.estado)}`:''}
-        </div>
+        ${sub?`<div style="font-size:11px;color:var(--tx2)">${sub}</div>`:''}
       </div>
       <div style="text-align:right;flex-shrink:0">
         <div style="font-size:11px;font-weight:600;color:var(--tx)">${esc(a.usuario_nombre||'—')}</div>
         <div style="font-size:10px;color:var(--tx3)">${new Date(a.fecha).toLocaleString('es-AR')}</div>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 function accionLabel(a){ return {crear:'➕ Creó',editar:'✏ Editó',eliminar:'🗑 Eliminó',aceptar:'✓ Aceptó',cambiar_proveedor:'🔄 Cambió proveedor'}[a]||a; }
 function filtrarAudit(){
