@@ -1174,7 +1174,10 @@ async function cargarUsuarios(){
       <span class="role-badge ${u.rol==='admin'?'role-admin':'role-usuario'}">${u.rol==='admin'?'Administrador':'Usuario'}</span>
       <div style="display:flex;align-items:center;gap:6px;margin-left:10px">
         <span style="font-size:11px;color:${u.activo?'var(--ok)':'var(--err)'}">${u.activo?'● Activo':'● Inactivo'}</span>
-        ${u.id!==curUser.id?`<button class="btn btn-xs btn-gh" onclick="toggleUsuario('${u.id}',${u.activo})">${u.activo?'Desactivar':'Activar'}</button>`:'<span style="font-size:10px;color:var(--tx3)">(vos)</span>'}
+        ${u.id!==curUser.id?`
+        <button class="btn btn-xs btn-gh" onclick="toggleUsuario('${u.id}',${u.activo})">${u.activo?'Desactivar':'Activar'}</button>
+        <button class="btn btn-xs btn-gh" style="color:var(--err)" onclick="eliminarUsuario('${u.id}','${u.nombre.replace(/'/g,\"\\'\")}')">🗑</button>
+      `:'<span style="font-size:10px;color:var(--tx3)">(vos)</span>'}
       </div>
     </div>`).join('');
 }
@@ -1201,6 +1204,15 @@ async function guardarUsuario(){
   document.getElementById('mbg-user').classList.remove('open');
   cargarUsuarios();
   alert(`✓ Usuario "${nombre}" creado. Ya puede ingresar con ${email}.`);
+}
+
+async function eliminarUsuario(id, nombre){
+  if(!confirm(`¿Eliminar al usuario "${nombre}"?\nEsta acción no se puede deshacer.`)) return;
+  const {error} = await sb.from('usuarios').delete().eq('id', id);
+  if(error){ alert('Error al eliminar: '+error.message); return; }
+  await registrarAuditoria('usuarios', id, 'eliminar', {nombre});
+  cargarUsuarios();
+  alert(`✓ Usuario "${nombre}" eliminado.`);
 }
 
 async function toggleUsuario(id, activo){
