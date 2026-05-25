@@ -1168,9 +1168,11 @@ function filtrarAudit(){
 async function cargarUsuarios(){
   const {data,error} = await sb.from('usuarios').select('*').order('creado_en');
   if(error||!data){ document.getElementById('usuarios-content').innerHTML='<p style="color:var(--tx2)">Error cargando usuarios.</p>'; return; }
-  document.getElementById('usuarios-content').innerHTML = data.map(u=>`
-    <div class="user-row">
-      <div class="u-avatar">${u.nombre.charAt(0).toUpperCase()}</div>
+  document.getElementById('usuarios-content').innerHTML = data.map(u=>{
+    const inicial = u.nombre.charAt(0).toUpperCase();
+    const esYo = u.id===curUser.id;
+    return `<div class="user-row">
+      <div class="u-avatar">${inicial}</div>
       <div style="flex:1">
         <div style="font-size:13px;font-weight:600;color:var(--tx)">${esc(u.nombre)}</div>
         <div style="font-size:11px;color:var(--tx2)">${esc(u.email)}</div>
@@ -1178,12 +1180,14 @@ async function cargarUsuarios(){
       <span class="role-badge ${u.rol==='admin'?'role-admin':'role-usuario'}">${u.rol==='admin'?'Administrador':'Usuario'}</span>
       <div style="display:flex;align-items:center;gap:6px;margin-left:10px">
         <span style="font-size:11px;color:${u.activo?'var(--ok)':'var(--err)'}">${u.activo?'● Activo':'● Inactivo'}</span>
-        ${u.id!==curUser.id?`
-        <button class="btn btn-xs btn-gh" onclick="toggleUsuario('${u.id}',${u.activo})">${u.activo?'Desactivar':'Activar'}</button>
-        <button class="btn btn-xs btn-gh" style="color:var(--err)" onclick="eliminarUsuario('${u.id}','${u.nombre.replace(/'/g,\"\\'\")}')">🗑</button>
-      `:'<span style="font-size:10px;color:var(--tx3)">(vos)</span>'}
+        ${esYo
+          ? '<span style="font-size:10px;color:var(--tx3)">(vos)</span>'
+          : `<button class="btn btn-xs btn-gh" onclick="toggleUsuario('${u.id}',${u.activo})">${u.activo?'Desactivar':'Activar'}</button>
+             <button class="btn btn-xs btn-gh" style="color:var(--err)" onclick="eliminarUsuario('${u.id}')">🗑</button>`
+        }
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
 function abrirNuevoUsuario(){
@@ -1210,13 +1214,13 @@ async function guardarUsuario(){
   alert(`✓ Usuario "${nombre}" creado. Ya puede ingresar con ${email}.`);
 }
 
-async function eliminarUsuario(id, nombre){
-  if(!confirm(`¿Eliminar al usuario "${nombre}"?\nEsta acción no se puede deshacer.`)) return;
+async function eliminarUsuario(id){
+  if(!confirm('¿Eliminar este usuario?\nEsta acción no se puede deshacer.')) return;
   const {error} = await sb.from('usuarios').delete().eq('id', id);
   if(error){ alert('Error al eliminar: '+error.message); return; }
-  await registrarAuditoria('usuarios', id, 'eliminar', {nombre});
+  await registrarAuditoria('usuarios', id, 'eliminar', {});
   cargarUsuarios();
-  alert(`✓ Usuario "${nombre}" eliminado.`);
+  alert('✓ Usuario eliminado.');
 }
 
 async function toggleUsuario(id, activo){
