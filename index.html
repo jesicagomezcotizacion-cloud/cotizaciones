@@ -908,6 +908,7 @@ async function cargarMisCotizaciones() {
       <td><span class="st ${stCls(c.estado)}">${esc(c.estado)}</span></td>
       <td><div style="display:flex;gap:3px">
         <button class="btn btn-xs btn-gh" onclick="previsualizarPDFCotId('${c.id}')">👁</button>
+        ${c.estado==='Borrador'&&(curUser.rol==='admin'||c.creado_por===curUser.id)?`<button class="btn btn-xs btn-p" onclick="reabrirBorrador('${c.id}')" title="Retomar borrador">✏ Retomar</button>`:''}
         ${curUser.rol==='admin'||c.creado_por===curUser.id?`<button class="btn btn-xs btn-gh btn-w" onclick="eliminarCotizacion('${c.id}')">🗑</button>`:''}
       </div></td>
     </tr>`;}).join('')}</tbody>
@@ -915,6 +916,35 @@ async function cargarMisCotizaciones() {
   // Actualizar badge
   document.getElementById('badge-mis').textContent = data.length;
   document.getElementById('badge-mis').style.display = 'inline';
+}
+
+async function reabrirBorrador(id) {
+  const c = cotCache[id];
+  if(!c){ alert('No se encontraron los datos del borrador.'); return; }
+  if(!confirm(`¿Retomar el borrador "${c.nro_pedido}"?\nSe cargará en el formulario y podrás continuar desde donde lo dejaste.`)) return;
+
+  // Restaurar datos al formulario
+  document.getElementById('nro').value        = c.nro_pedido||'';
+  document.getElementById('fped').value       = c.fecha||'';
+  document.getElementById('comprador').value  = c.comprador||'';
+  document.getElementById('sector').value     = c.sector||'';
+  document.getElementById('descped').value    = c.descripcion||'';
+  document.getElementById('empresa').value    = c.empresa||'';
+  document.getElementById('firma').value      = c.firma||'';
+
+  // Restaurar ítems y proveedores
+  rows  = c.items       ? JSON.parse(JSON.stringify(c.items))       : [];
+  provs = c.proveedores ? JSON.parse(JSON.stringify(c.proveedores)) : [];
+  selProvIdx = c.prov_sel_idx||0;
+
+  // Eliminar el borrador viejo para que al guardar de nuevo no duplique
+  await sb.from('cotizaciones').delete().eq('id', id);
+
+  renderItems();
+  goScreen('cot', document.querySelector('.nav-it'));
+  document.querySelector('.nav-it').classList.add('on');
+  goStep(0);
+  alert(`✓ Borrador "${c.nro_pedido}" cargado. Continuá desde donde lo dejaste.`);
 }
 
 async function eliminarCotizacion(id) {
