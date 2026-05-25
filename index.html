@@ -551,33 +551,35 @@ const now  = () => new Date().toLocaleString('es-AR');
 // AUTH — LOGIN / LOGOUT
 // ══════════════════════════════════════════════════════════
 async function login() {
-  const email = v('login-email').trim();
-  const pass  = v('login-pass');
+  const email = v('login-email').trim().toLowerCase();
+  const pass  = v('login-pass').trim();
   const btn   = document.getElementById('login-btn');
   const err   = document.getElementById('login-err');
   if(!email||!pass){ showErr(err,'Completá email y contraseña.'); return; }
   btn.textContent = 'Ingresando...'; btn.disabled = true;
   try {
-    // Buscar usuario en nuestra tabla
+    // Traer usuario por email
     const {data:users, error} = await sb.from('usuarios')
-      .select('*').eq('email', email.toLowerCase()).eq('activo', true);
-    if(error||!users||!users.length){
-      showErr(err,'Email o contraseña incorrectos.'); btn.textContent='Ingresar'; btn.disabled=false; return;
+      .select('*').eq('email', email).eq('activo', true);
+    if(error){ 
+      showErr(err,'Error de conexión: '+error.message); 
+      btn.textContent='Ingresar'; btn.disabled=false; return; 
+    }
+    if(!users||!users.length){
+      showErr(err,'Email no encontrado.'); 
+      btn.textContent='Ingresar'; btn.disabled=false; return;
     }
     const user = users[0];
-    // Verificar contraseña — acepta texto plano o hash SHA-256
-    const hashPass = await hashStr(pass);
-    const passOk = user.pass_hash === hashPass   // hash SHA-256
-                || user.pass_hash === pass        // texto plano (legacy)
-                || pass === 'juan2206' && user.email === 'jesica@cotizaciones.com'; // admin hardcoded
-    if(!passOk){
-      showErr(err,'Email o contraseña incorrectos.'); btn.textContent='Ingresar'; btn.disabled=false; return;
+    // Verificar contraseña — comparación directa con lo guardado en BD
+    if(user.pass_hash !== pass){
+      showErr(err,'Contraseña incorrecta.'); 
+      btn.textContent='Ingresar'; btn.disabled=false; return;
     }
     curUser = user;
     sessionStorage.setItem('cot_user', JSON.stringify(user));
     iniciarApp();
   } catch(e) {
-    showErr(err,'Error de conexión. Verificá tu internet.');
+    showErr(err,'Error: '+e.message);
     btn.textContent='Ingresar'; btn.disabled=false;
   }
 }
