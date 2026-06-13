@@ -4,11 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sistema de Cotizaciones</title>
-<link rel="manifest" href="/manifest.json">
-<meta name="theme-color" content="#2C2B28">
-<meta name="description" content="Sistema de gestión de cotizaciones">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Cotizaciones">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
@@ -299,16 +294,16 @@ html,body{height:100%;font-family:'Segoe UI',system-ui,sans-serif;font-size:13px
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
         Seguimiento <span class="nav-badge" id="badge-seg">0</span>
       </div>
-      <div class="nav-sec" id="nav-sec-admin" style="display:none">Admin</div>
-      <div class="nav-it" id="nav-auditoria" style="display:none" onclick="goScreen('auditoria',this)">
+      <div class="nav-it" onclick="goScreen('auditoria',this)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg>
         Auditoría
       </div>
+      <div class="nav-sec" id="nav-sec-admin" style="display:none">Admin</div>
       <div class="nav-it" id="nav-usuarios" style="display:none" onclick="goScreen('usuarios',this)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
         Gestión usuarios
       </div>
-      <div class="nav-it" id="nav-estados" style="display:none" onclick="goScreen('est',this)">
+      <div class="nav-it" onclick="goScreen('est',this)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/></svg>
         Estados
       </div>
@@ -534,21 +529,98 @@ const sb = supabase.createClient(SUPA_URL, SUPA_KEY);
 // ── ESTADO GLOBAL ────────────────────────────────────────
 let curUser = null;       // usuario logueado
 let curStep = 0, curPTab = 0, selProvIdx = 0;
-let provs = [{name:'Proveedor 1',condPago:'',plazo:'',obs:'',justif:'',prices:[]},
-             {name:'Proveedor 2',condPago:'',plazo:'',obs:'',justif:'',prices:[]}];
+let provs = [{name:'Proveedor 1',moneda:'ARS',condPago:'',plazo:'',obs:'',justif:'',prices:[]},
+             {name:'Proveedor 2',moneda:'ARS',condPago:'',plazo:'',obs:'',justif:'',prices:[]}];
+let cotizacionesMoneda = null; // {usd:{compra,venta}, eur:{compra,venta}, fecha}
 let rows = [];
 let estados = ['Cotizado','Aceptado','En proceso','OC Generada','Enviado a proveedor','Entregado','Cancelado'];
 let editSegIdx = null, editSegId = null;
 let pdfDataCache = null;
 let allAudit = [], editUserId = null;
-let cotCache = {}; // mapa id → objeto cotización completo
 let mProvSelName = null, mProvSelTotal = null, mProvSelIdx = null;
 
 const fmt  = n => '$' + Math.round(Number(n)||0).toLocaleString('es-AR');
+const fmtNum = n => Math.round(Number(n)||0).toLocaleString('es-AR');
+const monedaSimbolo = m => ({ARS:'$',USD:'US$',EUR:'€'}[m]||'$');
+
+// ── COTIZACIÓN BANCO NACIÓN (vía DolarAPI) ──────────────
+async function obtenerCotizaciones(){
+  if(cotizacionesMoneda && (Date.now()-cotizacionesMoneda._ts) < 1000*60*30){
+    return cotizacionesMoneda; // cache 30 min
+  }
+  const resultado = { usd:{compra:0,venta:0}, eur:{compra:0,venta:0}, fecha:'', fuente:'', _ts:Date.now() };
+  try{
+    // Intento 1: ArgentinaDatos - cotizaciones bancarias (incluye Banco Nación)
+    const r1 = await fetch('https://api.argentinadatos.com/v1/cotizaciones/dolares');
+    if(r1.ok){
+      const data = await r1.json();
+      const nacion = data.find(d => (d.casa||'').toLowerCase().includes('nacion'));
+      const oficial = data.find(d => (d.casa||'').toLowerCase()==='oficial');
+      const usdSrc = nacion || oficial;
+      if(usdSrc){
+        resultado.usd = {compra:Number(usdSrc.compra)||0, venta:Number(usdSrc.venta)||0};
+        resultado.fecha = usdSrc.fecha || new Date().toISOString();
+        resultado.fuente = nacion ? 'Banco Nación' : 'Oficial (BCRA)';
+      }
+    }
+  }catch(e){ console.warn('Error ArgentinaDatos USD:', e); }
+
+  // Fallback / EUR: DolarAPI.com
+  try{
+    if(!resultado.usd.venta){
+      const r2 = await fetch('https://dolarapi.com/v1/dolares/oficial');
+      if(r2.ok){
+        const d2 = await r2.json();
+        resultado.usd = {compra:Number(d2.compra)||0, venta:Number(d2.venta)||0};
+        resultado.fecha = d2.fechaActualizacion || resultado.fecha;
+        resultado.fuente = resultado.fuente || 'Oficial (BCRA)';
+      }
+    }
+    const r3 = await fetch('https://dolarapi.com/v1/cotizaciones/eur');
+    if(r3.ok){
+      const d3 = await r3.json();
+      resultado.eur = {compra:Number(d3.compra)||0, venta:Number(d3.venta)||0};
+      if(!resultado.fecha) resultado.fecha = d3.fechaActualizacion || new Date().toISOString();
+    }
+  }catch(e){ console.warn('Error DolarAPI:', e); }
+
+  if(!resultado.fecha) resultado.fecha = new Date().toISOString();
+  cotizacionesMoneda = resultado;
+  return resultado;
+}
+
+// Convierte un monto de "desde" a "hacia" usando venta para comprar divisa
+function convertirMoneda(monto, desde, hacia, cot){
+  if(desde===hacia) return monto;
+  // Todo se pasa por ARS como base
+  let enArs;
+  if(desde==='ARS') enArs = monto;
+  else if(desde==='USD') enArs = monto * (cot.usd.venta||0);
+  else if(desde==='EUR') enArs = monto * (cot.eur.venta||0);
+  else enArs = monto;
+
+  if(hacia==='ARS') return enArs;
+  if(hacia==='USD') return cot.usd.venta ? enArs / cot.usd.venta : 0;
+  if(hacia==='EUR') return cot.eur.venta ? enArs / cot.eur.venta : 0;
+  return enArs;
+}
 const parse = v => parseFloat((v+'').replace(/[^0-9.-]/g,''))||0;
 const ptot  = pi => rows.reduce((s,r,ri) => s + parse(provs[pi].prices[ri]||0)*parse(r.cant), 0);
 const totals = () => provs.map((_,pi) => ptot(pi));
-const ranked = () => provs.map((p,i) => ({...p,total:totals()[i],idx:i})).filter(x=>x.total>0).sort((a,b)=>a.total-b.total);
+
+// Total convertido a ARS (para comparar proveedores en distinta moneda)
+const ptotARS = pi => {
+  const t = ptot(pi);
+  const mon = provs[pi].moneda||'ARS';
+  if(mon==='ARS' || !cotizacionesMoneda) return t;
+  return convertirMoneda(t, mon, 'ARS', cotizacionesMoneda);
+};
+const totalsARS = () => provs.map((_,pi) => ptotARS(pi));
+const ranked = () => {
+  const T=totals(), TA=totalsARS();
+  return provs.map((p,i) => ({...p,total:TA[i],totalOriginal:T[i],idx:i}))
+    .filter(x=>x.totalOriginal>0).sort((a,b)=>a.total-b.total);
+};
 const esc  = s => (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
 const v    = id => { const el=document.getElementById(id); return el?el.value:''; };
 const now  = () => new Date().toLocaleString('es-AR');
@@ -576,9 +648,8 @@ async function login() {
       btn.textContent='Ingresar'; btn.disabled=false; return;
     }
     const user = users[0];
-    // Verificar contraseña — comparar hash SHA-256
-    const inputHash = await hashStr(pass);
-    if(user.pass_hash !== inputHash && user.pass_hash !== pass){
+    // Verificar contraseña — comparación directa con lo guardado en BD
+    if(user.pass_hash !== pass){
       showErr(err,'Contraseña incorrecta.'); 
       btn.textContent='Ingresar'; btn.disabled=false; return;
     }
@@ -619,9 +690,7 @@ function iniciarApp() {
   // Admin: mostrar sección admin
   if(curUser.rol==='admin'){
     document.getElementById('nav-sec-admin').style.display  = '';
-    document.getElementById('nav-auditoria').style.display  = '';
     document.getElementById('nav-usuarios').style.display   = '';
-    document.getElementById('nav-estados').style.display    = '';
   }
   // Init
   document.getElementById('fped').value = new Date().toISOString().split('T')[0];
@@ -648,10 +717,6 @@ async function registrarAuditoria(tabla, registroId, accion, detalle={}) {
 // NAVEGACIÓN
 // ══════════════════════════════════════════════════════════
 function goScreen(name, el) {
-  // Proteger pantallas solo-admin
-  if(['auditoria','usuarios','est'].includes(name) && curUser.rol!=='admin'){
-    alert('Acceso restringido a administradores.'); return;
-  }
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.querySelectorAll('.nav-it').forEach(n=>n.classList.remove('on'));
   document.getElementById('screen-'+name).classList.add('active');
@@ -667,9 +732,16 @@ function goScreen(name, el) {
   if(name==='cot')       updateStepSub();
 }
 
-function goStep(n){
+async function goStep(n){
   if(n===2) renderProvTabs();
-  if(n===3){ buildAnalysis(); buildDecision(); }
+  if(n===3){
+    const hayMultiMoneda = provs.some(p=>(p.moneda||'ARS')!=='ARS');
+    if(hayMultiMoneda){
+      document.getElementById('analysis').innerHTML = '<p style="color:var(--tx2)">Consultando cotización del Banco Nación...</p>';
+      await obtenerCotizaciones();
+    }
+    buildAnalysis(); buildDecision();
+  }
   document.querySelectorAll('.panel').forEach((p,i)=>p.classList.toggle('active',i===n));
   document.querySelectorAll('.step').forEach((b,i)=>{b.classList.remove('act','don');if(i===n)b.classList.add('act');else if(i<n)b.classList.add('don');});
   curStep=n; updateStepSub();
@@ -693,7 +765,7 @@ function renderItems(){
 // ══════════════════════════════════════════════════════════
 // PROVEEDORES
 // ══════════════════════════════════════════════════════════
-function addProv(){provs.push({name:'Proveedor '+(provs.length+1),condPago:'',plazo:'',obs:'',justif:'',prices:rows.map(()=>0)});renderProvTabs();}
+function addProv(){provs.push({name:'Proveedor '+(provs.length+1),moneda:'ARS',condPago:'',plazo:'',obs:'',justif:'',prices:rows.map(()=>0)});renderProvTabs();}
 function removeProv(i){if(provs.length<=2)return;provs.splice(i,1);curPTab=0;renderProvTabs();}
 function renderProvTabs(){
   provs.forEach(p=>{while(p.prices.length<rows.length)p.prices.push(0);});
@@ -711,9 +783,19 @@ function renderProvTabs(){
           <div style="font-size:9px;color:var(--ac);font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px">PROVEEDOR ${pi+1}</div>
           <input class="pname" value="${esc(p.name)}" onchange="provs[${pi}].name=this.value;renderProvTabs()" placeholder="Nombre del proveedor">
         </div>
-        <div style="text-align:right">
-          <div style="font-size:9px;color:var(--tx2)">${rows.length} ítem(s)</div>
-          <div style="font-size:16px;font-weight:700;color:var(--ac)">${fmt(ptot(pi))}</div>
+        <div style="display:flex;align-items:flex-start;gap:10px">
+          <div class="f" style="gap:2px">
+            <label style="font-size:9px;text-align:center">Moneda</label>
+            <select onchange="provs[${pi}].moneda=this.value;renderProvTabs()" style="font-size:12px;padding:5px 7px;font-weight:600">
+              <option value="ARS" ${(p.moneda||'ARS')==='ARS'?'selected':''}>$ ARS</option>
+              <option value="USD" ${p.moneda==='USD'?'selected':''}>US$ USD</option>
+              <option value="EUR" ${p.moneda==='EUR'?'selected':''}>€ EUR</option>
+            </select>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:9px;color:var(--tx2)">${rows.length} ítem(s)</div>
+            <div style="font-size:16px;font-weight:700;color:var(--ac)">${monedaSimbolo(p.moneda)}${fmtNum(ptot(pi))}</div>
+          </div>
         </div>
       </div>
       ${rows.length===0?'<p style="color:var(--tx2);font-size:12px;padding:.5rem 0">Primero agregá ítems en el paso 2.</p>':''}
@@ -749,16 +831,24 @@ function buildAnalysis(){
   const R=ranked(),div=document.getElementById('analysis');
   if(!R.length){div.innerHTML='<p style="color:var(--tx2)">Cargá precios en el paso anterior.</p>';return;}
   const best=R[0].total,worst=R[R.length-1].total,avg=R.reduce((s,x)=>s+x.total,0)/R.length;
-  div.innerHTML=`<div class="ag">
-    <div class="ac-card ac-b"><div class="ac-lbl">🏆 Mejor precio</div><div class="ac-val" style="color:var(--ok)">${fmt(best)}</div><div class="ac-prov" style="color:var(--ok)">${esc(R[0].name)}</div></div>
+  const hayMultiMoneda = provs.some(p=>(p.moneda||'ARS')!=='ARS');
+  const cot = cotizacionesMoneda;
+  const cotInfo = hayMultiMoneda && cot ? `
+    <div style="background:var(--acl);border:1px solid var(--bd2);border-radius:var(--r2);padding:8px 12px;margin-bottom:11px;font-size:11px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
+      <span>💱 <strong>Cotización ${esc(cot.fuente||'Banco Nación')}</strong> — USD: compra ${fmtNum(cot.usd.compra)} / venta ${fmtNum(cot.usd.venta)} &nbsp; EUR: compra ${fmtNum(cot.eur.compra)} / venta ${fmtNum(cot.eur.venta)}</span>
+      <span style="color:var(--tx2)">${new Date(cot.fecha).toLocaleDateString('es-AR')}</span>
+    </div>` : '';
+  div.innerHTML=`${cotInfo}
+  <div class="ag">
+    <div class="ac-card ac-b"><div class="ac-lbl">🏆 Mejor precio</div><div class="ac-val" style="color:var(--ok)">${fmt(best)}</div><div class="ac-prov" style="color:var(--ok)">${esc(R[0].name)}${R[0].moneda&&R[0].moneda!=='ARS'?' ('+monedaSimbolo(R[0].moneda)+fmtNum(R[0].totalOriginal)+')':''}</div></div>
     <div class="ac-card ac-m"><div class="ac-lbl">📊 Promedio</div><div class="ac-val" style="color:var(--warn)">${fmt(Math.round(avg))}</div><div class="ac-prov" style="color:var(--warn)">${R.length} proveedores</div></div>
-    <div class="ac-card ac-w"><div class="ac-lbl">⬆ Más alto</div><div class="ac-val" style="color:var(--err)">${fmt(worst)}</div><div class="ac-prov" style="color:var(--err)">${esc(R[R.length-1].name)}</div></div>
+    <div class="ac-card ac-w"><div class="ac-lbl">⬆ Más alto</div><div class="ac-val" style="color:var(--err)">${fmt(worst)}</div><div class="ac-prov" style="color:var(--err)">${esc(R[R.length-1].name)}${R[R.length-1].moneda&&R[R.length-1].moneda!=='ARS'?' ('+monedaSimbolo(R[R.length-1].moneda)+fmtNum(R[R.length-1].totalOriginal)+')':''}</div></div>
   </div>
   <div class="rank-list">${R.map((x,i)=>`<div class="rank-row">
     <div class="medal ${i===0?'m1':i===1?'m2':'m3'}">${i+1}</div>
-    <div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600;color:var(--tx);margin-bottom:4px">${esc(x.name)}</div>
+    <div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600;color:var(--tx);margin-bottom:4px">${esc(x.name)} ${x.moneda&&x.moneda!=='ARS'?`<span style="font-size:10px;color:var(--tx2);font-weight:400">— ${monedaSimbolo(x.moneda)}${fmtNum(x.totalOriginal)}</span>`:''}</div>
     <div class="bw"><div class="bf" style="width:${Math.round((x.total/worst)*100)}%;background:${i===0?'var(--ok)':i===1?'var(--warn)':'var(--err)'}"></div></div></div>
-    <div style="font-size:14px;font-weight:700;color:${i===0?'var(--ok)':i===1?'var(--warn)':'var(--err)'}">${fmt(x.total)}</div>
+    <div style="font-size:14px;font-weight:700;color:${i===0?'var(--ok)':i===1?'var(--warn)':'var(--err)'}">${fmt(x.total)}<div style="font-size:9px;font-weight:400;color:var(--tx2)">equiv. ARS</div></div>
   </div>`).join('')}</div>
   <div class="sav-box">
     <div class="sav-row"><span>Ahorro menor vs. más caro</span><span style="font-weight:700;color:var(--ok)">${fmt(worst-best)} (${worst>0?((worst-best)/worst*100).toFixed(1):0}%)</span></div>
@@ -786,12 +876,13 @@ function buildDecision(){
       </div>
       <div style="text-align:right;flex-shrink:0">
         <div style="font-size:14px;font-weight:700;color:${i===0?'var(--ok)':i===1?'var(--warn)':'var(--err)'}">${fmt(x.total)}</div>
+        ${x.moneda&&x.moneda!=='ARS'?`<div style="font-size:10px;color:var(--tx2)">${monedaSimbolo(x.moneda)}${fmtNum(x.totalOriginal)}</div>`:''}
         ${i>0?`<div style="font-size:10px;color:var(--tx2)">+${fmt(x.total-R[0].total)}</div>`:''}
       </div>
     </div>`).join('')}
   </div>
   <div style="background:var(--hover);border:1px solid var(--bd);border-radius:var(--r2);padding:12px 14px;margin-bottom:12px">
-    <div style="font-size:10px;font-weight:700;color:var(--ac);margin-bottom:10px">Datos del proveedor seleccionado</div>
+    <div style="font-size:10px;font-weight:700;color:var(--ac);margin-bottom:10px">Datos del proveedor seleccionado${sel.moneda&&sel.moneda!=='ARS'?` — cotiza en ${sel.moneda}`:''}</div>
     <div class="g2" style="margin-bottom:8px">
       <div class="f"><label>Condición de pago</label><input id="d-cond" value="${esc(sel.condPago)}" placeholder="Condición de pago"></div>
       <div class="f"><label>Plazo de entrega</label><input id="d-plazo" value="${esc(sel.plazo)}" placeholder="Plazo de entrega"></div>
@@ -883,73 +974,33 @@ async function aceptarCotizacion() {
 async function cargarMisCotizaciones() {
   document.getElementById('mis-cot-content').innerHTML='<div style="padding:2rem;text-align:center;color:var(--tx2)">Cargando...</div>';
   const query = curUser.rol==='admin'
-    ? sb.from('cotizaciones').select('*').order('creado_en',{ascending:false})
-    : sb.from('cotizaciones').select('*').eq('creado_por',curUser.id).order('creado_en',{ascending:false});
+    ? sb.from('cotizaciones').select('*,usuarios!cotizaciones_creado_por_fkey(nombre)').order('creado_en',{ascending:false})
+    : sb.from('cotizaciones').select('*,usuarios!cotizaciones_creado_por_fkey(nombre)').eq('creado_por',curUser.id).order('creado_en',{ascending:false});
   const {data,error} = await query;
   if(error||!data||!data.length){
     document.getElementById('mis-cot-content').innerHTML='<div class="empty"><p>No hay cotizaciones todavía.</p><small>Creá una desde "Nueva cotización".</small></div>';
     return;
   }
-  // Traer nombres de usuarios en una sola query
-  const uids=[...new Set(data.map(c=>c.creado_por).filter(Boolean))];
-  let uMap={};
-  if(uids.length){
-    const {data:uData}=await sb.from('usuarios').select('id,nombre').in('id',uids);
-    if(uData) uData.forEach(u=>uMap[u.id]=u.nombre);
-  }
   document.getElementById('mis-cot-content').innerHTML=`<div class="ov"><table class="tt">
     <thead><tr><th>N° Pedido</th><th>Descripción</th><th>Creado por</th><th>Fecha</th><th>Estado</th><th>Acciones</th></tr></thead>
-    <tbody>${data.map(c=>{
-      cotCache[c.id] = c;
-      const creadorNombre = uMap[c.creado_por]||c.creado_por||'—';
-      return `<tr>
+    <tbody>${data.map(c=>`<tr>
       <td style="font-weight:700">${esc(c.nro_pedido)}</td>
       <td>${esc(c.descripcion||'—')}</td>
       <td><span style="display:inline-flex;align-items:center;gap:5px">
-        <span style="width:22px;height:22px;border-radius:50%;background:var(--ac);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700">${creadorNombre.charAt(0).toUpperCase()}</span>
-        ${esc(creadorNombre)}
+        <span style="width:22px;height:22px;border-radius:50%;background:var(--ac);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700">${(c.usuarios?.nombre||'?').charAt(0)}</span>
+        ${esc(c.usuarios?.nombre||'—')}
       </span></td>
       <td>${c.fecha||'—'}</td>
       <td><span class="st ${stCls(c.estado)}">${esc(c.estado)}</span></td>
       <td><div style="display:flex;gap:3px">
-        <button class="btn btn-xs btn-gh" onclick="previsualizarPDFCotId('${c.id}')">👁</button>
-        ${c.estado==='Borrador'&&(curUser.rol==='admin'||c.creado_por===curUser.id)?`<button class="btn btn-xs btn-p" onclick="reabrirBorrador('${c.id}')" title="Retomar borrador">✏ Retomar</button>`:''}
+        <button class="btn btn-xs btn-gh" onclick="previsualizarPDFCot(${JSON.stringify(c).replace(/"/g,'&quot;')})">👁</button>
         ${curUser.rol==='admin'||c.creado_por===curUser.id?`<button class="btn btn-xs btn-gh btn-w" onclick="eliminarCotizacion('${c.id}')">🗑</button>`:''}
       </div></td>
-    </tr>`;}).join('')}</tbody>
+    </tr>`).join('')}</tbody>
   </table></div>`;
   // Actualizar badge
   document.getElementById('badge-mis').textContent = data.length;
   document.getElementById('badge-mis').style.display = 'inline';
-}
-
-async function reabrirBorrador(id) {
-  const c = cotCache[id];
-  if(!c){ alert('No se encontraron los datos del borrador.'); return; }
-  if(!confirm(`¿Retomar el borrador "${c.nro_pedido}"?\nSe cargará en el formulario y podrás continuar desde donde lo dejaste.`)) return;
-
-  // Restaurar datos al formulario
-  document.getElementById('nro').value        = c.nro_pedido||'';
-  document.getElementById('fped').value       = c.fecha||'';
-  document.getElementById('comprador').value  = c.comprador||'';
-  document.getElementById('sector').value     = c.sector||'';
-  document.getElementById('descped').value    = c.descripcion||'';
-  document.getElementById('empresa').value    = c.empresa||'';
-  document.getElementById('firma').value      = c.firma||'';
-
-  // Restaurar ítems y proveedores
-  rows  = c.items       ? JSON.parse(JSON.stringify(c.items))       : [];
-  provs = c.proveedores ? JSON.parse(JSON.stringify(c.proveedores)) : [];
-  selProvIdx = c.prov_sel_idx||0;
-
-  // Eliminar el borrador viejo para que al guardar de nuevo no duplique
-  await sb.from('cotizaciones').delete().eq('id', id);
-
-  renderItems();
-  goScreen('cot', document.querySelector('.nav-it'));
-  document.querySelector('.nav-it').classList.add('on');
-  goStep(0);
-  alert(`✓ Borrador "${c.nro_pedido}" cargado. Continuá desde donde lo dejaste.`);
 }
 
 async function eliminarCotizacion(id) {
@@ -966,33 +1017,20 @@ async function eliminarCotizacion(id) {
 async function cargarSeguimiento() {
   document.getElementById('seg-content').innerHTML='<div style="padding:2rem;text-align:center;color:var(--tx2)">Cargando...</div>';
   const {data,error} = await sb.from('seguimiento')
-    .select('*')
+    .select('*,usuarios!seguimiento_creado_por_fkey(nombre)')
     .order('creado_en',{ascending:false});
   if(error||!data||!data.length){
     document.getElementById('seg-content').innerHTML='<div class="empty"><p>No hay pedidos en seguimiento todavía.</p></div>';
     return;
   }
-  // Traer nombres de usuarios
-  const uids2=[...new Set(data.map(p=>p.creado_por).filter(Boolean))];
-  let uMap2={};
-  if(uids2.length){
-    const {data:uData2}=await sb.from('usuarios').select('id,nombre').in('id',uids2);
-    if(uData2) uData2.forEach(u=>uMap2[u.id]=u.nombre);
-  }
   document.getElementById('seg-content').innerHTML=`<div class="ov"><table class="tt">
-    <thead><tr><th>N° Pedido</th><th>Descripción</th><th>Cargado por</th><th>Proveedor elegido</th><th>Monto</th><th>Estado</th><th>Cambio</th><th>Cond. Pago</th><th>N° OC</th><th>Última modificación</th><th style="width:60px">Acciones</th></tr></thead>
-    <tbody>${data.map((p,i)=>{
-      const creadorNombre2 = uMap2[p.creado_por]||p.creado_por||'—';
-      const histCambios = p.hist_cambios||[];
-      const ultMod = histCambios.length ? histCambios[histCambios.length-1] : null;
-      const modNombre = ultMod ? ultMod.usuario : (p.modificado_nombre||null);
-      const modFecha  = ultMod ? ultMod.fecha   : (p.actualizado_en ? new Date(p.actualizado_en).toLocaleDateString('es-AR') : null);
-      return `<tr>
+    <thead><tr><th>N° Pedido</th><th>Descripción</th><th>Creado por</th><th>Proveedor elegido</th><th>Monto</th><th>Estado</th><th>Cambio</th><th>Cond. Pago</th><th>N° OC</th><th style="width:80px">Acciones</th></tr></thead>
+    <tbody>${data.map((p,i)=>`<tr>
       <td style="font-weight:700">${esc(p.nro_pedido)}</td>
       <td>${esc(p.descripcion||'—')}</td>
       <td><span style="display:inline-flex;align-items:center;gap:5px">
-        <span style="width:22px;height:22px;border-radius:50%;background:var(--ac);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700">${creadorNombre2.charAt(0).toUpperCase()}</span>
-        ${esc(creadorNombre2)}
+        <span style="width:22px;height:22px;border-radius:50%;background:var(--ac);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700">${(p.usuarios?.nombre||'?').charAt(0)}</span>
+        ${esc(p.usuarios?.nombre||'—')}
       </span></td>
       <td>${esc(p.prov_sel||'—')}</td>
       <td style="font-weight:700">${p.monto?fmt(p.monto):'—'}</td>
@@ -1000,14 +1038,10 @@ async function cargarSeguimiento() {
       <td>${p.is_chg?`<span class="chg-yes" title="${esc(p.motivo_chg||'')}">⚠ Cambiado</span>`:'<span class="chg-no">✓ Menor</span>'}</td>
       <td>${esc(p.cond_pago||'—')}</td>
       <td>${esc(p.nro_oc||'—')}</td>
-      <td>${modNombre
-        ? `<span style="font-size:11px;font-weight:600;color:var(--tx)">${esc(modNombre)}</span><br><span style="font-size:10px;color:var(--tx2)">${esc(modFecha||'')}</span>`
-        : '<span style="color:var(--tx3);font-size:11px">Sin cambios</span>'
-      }</td>
       <td><div style="display:flex;gap:3px">
         <button class="btn btn-xs btn-gh" onclick="openModSeg('${p.id}')">✏</button>
       </div></td>
-    </tr>`;}).join('')}</tbody>
+    </tr>`).join('')}</tbody>
   </table></div>`;
   document.getElementById('badge-seg').textContent=data.length;
   document.getElementById('badge-seg').style.display='inline';
@@ -1162,19 +1196,16 @@ async function saveMod(){
     fecha_autor: document.getElementById('m-fecha')?.value||null,
     obs_track: document.getElementById('m-obs')?.value,
     justif:    document.getElementById('m-justif')?.value,
-    actualizado_en: new Date().toISOString(),
-    modificado_por: curUser.id,
-    modificado_nombre: curUser.nombre
+    actualizado_en: new Date().toISOString()
   };
-
-  // Traer datos actuales del registro (nro_pedido + hist_cambios si hay cambio de proveedor)
-  const {data:curr} = await sb.from('seguimiento').select('nro_pedido,hist_cambios,prov_sel,monto').eq('id',editSegId).single();
-  const nroPedido = curr?.nro_pedido||'—';
 
   // Cambio de proveedor
   if(mProvSelName){
     const motivo = (document.getElementById('m-motivo-nuevo')?.value||'').trim();
     if(!motivo){ alert('Ingresá el motivo del cambio de proveedor.'); return; }
+
+    // Traer hist_cambios actual
+    const {data:curr} = await sb.from('seguimiento').select('hist_cambios,prov_sel,monto').eq('id',editSegId).single();
     const hist = curr?.hist_cambios||[];
     hist.push({
       deProv: curr?.prov_sel, aProv: mProvSelName,
@@ -1189,16 +1220,12 @@ async function saveMod(){
     updates.hist_cambios = hist;
     if(document.getElementById('m-nueva-cond')?.value) updates.cond_pago = document.getElementById('m-nueva-cond').value;
     if(document.getElementById('m-nuevo-plazo')?.value) updates.plazo    = document.getElementById('m-nuevo-plazo').value;
-    await registrarAuditoria('seguimiento', editSegId, 'cambiar_proveedor', {
-      nro_pedido: nroPedido, deProv: curr?.prov_sel, aProv: mProvSelName, motivo
-    });
+    await registrarAuditoria('seguimiento', editSegId, 'cambiar_proveedor', {deProv:curr?.prov_sel, aProv:mProvSelName, motivo});
   }
 
   const {error} = await sb.from('seguimiento').update(updates).eq('id', editSegId);
   if(error){ alert('Error al guardar: '+error.message); return; }
-  await registrarAuditoria('seguimiento', editSegId, 'editar', {
-    nro_pedido: nroPedido, estado: updates.estado, nro_oc: updates.nro_oc||''
-  });
+  await registrarAuditoria('seguimiento', editSegId, 'editar', {estado:updates.estado});
   closeMod(); showSaved(); cargarSeguimiento();
 }
 
@@ -1213,44 +1240,25 @@ async function cargarAuditoria(){
 }
 function renderAudit(data){
   if(!data.length){ document.getElementById('audit-content').innerHTML='<p style="color:var(--tx2)">Sin registros.</p>'; return; }
-  document.getElementById('audit-content').innerHTML = data.map(a=>{
-    const d = a.detalle||{};
-    // Línea principal: acción + N° pedido si existe
-    const nro = d.nro_pedido ? `<span style="background:var(--acl);color:var(--ac);border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;margin-left:6px">${esc(d.nro_pedido)}</span>` : '';
-    // Detalle secundario según acción
-    let sub = '';
-    if(a.accion==='editar'){
-      const partes = [];
-      if(d.estado) partes.push(`Estado → <strong>${esc(d.estado)}</strong>`);
-      if(d.nro_oc) partes.push(`N° OC: <strong>${esc(d.nro_oc)}</strong>`);
-      sub = partes.join(' · ');
-    } else if(a.accion==='cambiar_proveedor'){
-      sub = `De <strong>${esc(d.deProv||'—')}</strong> → <strong>${esc(d.aProv||'—')}</strong>${d.motivo?' · Motivo: '+esc(d.motivo):''}`;
-    } else if(a.accion==='crear'){
-      sub = d.nombre ? `Usuario: <strong>${esc(d.nombre)}</strong> (${esc(d.rol||'')})` : (d.estado?`Estado: <strong>${esc(d.estado)}</strong>`:'');
-    } else if(a.accion==='aceptar'){
-      const partes = [];
-      if(d.prov_sel) partes.push(`Proveedor: <strong>${esc(d.prov_sel)}</strong>`);
-      if(d.monto) partes.push(`Monto: <strong>${fmt(d.monto)}</strong>`);
-      sub = partes.join(' · ');
-    } else if(a.accion==='eliminar'){
-      sub = d.nombre ? `Usuario eliminado: <strong>${esc(d.nombre)}</strong>` : '';
-    }
-    return `
+  document.getElementById('audit-content').innerHTML = data.map(a=>`
     <div class="audit-row">
       <div class="audit-dot audit-${a.accion||'editar'}"></div>
       <div style="flex:1">
-        <div style="font-size:12px;font-weight:600;color:var(--tx);margin-bottom:3px">
-          ${accionLabel(a.accion)}${nro}
+        <div style="font-size:12px;font-weight:600;color:var(--tx);margin-bottom:2px">
+          ${accionLabel(a.accion)} — ${esc(a.tabla)}
+          ${a.detalle?.nro_pedido?` <span style="color:var(--tx2)">· ${esc(a.detalle.nro_pedido)}</span>`:''}
         </div>
-        ${sub?`<div style="font-size:11px;color:var(--tx2)">${sub}</div>`:''}
+        <div style="font-size:11px;color:var(--tx2)">
+          ${a.detalle?.prov_sel?`Proveedor: ${esc(a.detalle.prov_sel)} · `:'' }
+          ${a.detalle?.motivo?`Motivo: ${esc(a.detalle.motivo)} · `:''}
+          ${a.detalle?.estado?`Estado: ${esc(a.detalle.estado)}`:''}
+        </div>
       </div>
       <div style="text-align:right;flex-shrink:0">
         <div style="font-size:11px;font-weight:600;color:var(--tx)">${esc(a.usuario_nombre||'—')}</div>
         <div style="font-size:10px;color:var(--tx3)">${new Date(a.fecha).toLocaleString('es-AR')}</div>
       </div>
-    </div>`;
-  }).join('');
+    </div>`).join('');
 }
 function accionLabel(a){ return {crear:'➕ Creó',editar:'✏ Editó',eliminar:'🗑 Eliminó',aceptar:'✓ Aceptó',cambiar_proveedor:'🔄 Cambió proveedor'}[a]||a; }
 function filtrarAudit(){
@@ -1368,7 +1376,7 @@ function stCls(e){const m={'Aceptado':'st-a','En proceso':'st-p','OC Generada':'
 
 function nuevaCot(){
   if(!confirm('¿Nueva cotización? Se limpiará el formulario.')) return;
-  rows=[]; provs=[{name:'Proveedor 1',condPago:'',plazo:'',obs:'',justif:'',prices:[]},{name:'Proveedor 2',condPago:'',plazo:'',obs:'',justif:'',prices:[]}];
+  rows=[]; provs=[{name:'Proveedor 1',moneda:'ARS',condPago:'',plazo:'',obs:'',justif:'',prices:[]},{name:'Proveedor 2',moneda:'ARS',condPago:'',plazo:'',obs:'',justif:'',prices:[]}];
   selProvIdx=0;
   ['nro','comprador','sector','descped'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('fped').value=new Date().toISOString().split('T')[0];
@@ -1383,50 +1391,92 @@ function setTheme(t){
 // ══════════════════════════════════════════════════════════
 // PDF — PREVISUALIZACIÓN Y DESCARGA
 // ══════════════════════════════════════════════════════════
-function previsualizarPDF(){
+async function previsualizarPDF(){
   const T=totals(),R=ranked(),bestIdx=R.length?R[0].idx:0;
-  pdfDataCache={empresa:v('empresa')||'Mi Empresa',nro:v('nro')||'SN',fecha:v('fped')||'—',comprador:v('comprador')||'—',sector:v('sector')||'—',desc:v('descped')||'—',firma:v('firma')||'—',provs:JSON.parse(JSON.stringify(provs)),rows:JSON.parse(JSON.stringify(rows)),totals:T,selIdx:selProvIdx,bestIdx,isChg:selProvIdx!==bestIdx,motivo:document.getElementById('d-motivo')?.value||'',condPago:document.getElementById('d-cond')?.value||'',plazo:document.getElementById('d-plazo')?.value||'',obs:document.getElementById('d-obs')?.value||'',justif:document.getElementById('d-justif')?.value||'',creadoPor:curUser.nombre};
+  const cot = await obtenerCotizaciones();
+  pdfDataCache={empresa:v('empresa')||'Mi Empresa',nro:v('nro')||'SN',fecha:v('fped')||'—',comprador:v('comprador')||'—',sector:v('sector')||'—',desc:v('descped')||'—',firma:v('firma')||'—',provs:JSON.parse(JSON.stringify(provs)),rows:JSON.parse(JSON.stringify(rows)),totals:T,selIdx:selProvIdx,bestIdx,isChg:selProvIdx!==bestIdx,motivo:document.getElementById('d-motivo')?.value||'',condPago:document.getElementById('d-cond')?.value||'',plazo:document.getElementById('d-plazo')?.value||'',obs:document.getElementById('d-obs')?.value||'',justif:document.getElementById('d-justif')?.value||'',creadoPor:curUser.nombre,cotizaciones:cot};
   renderPreview(pdfDataCache);
 }
-function previsualizarPDFCotId(id){
-  const c = cotCache[id];
-  if(!c){ alert('No se encontraron los datos de la cotización.'); return; }
-  previsualizarPDFCot(c);
-}
-function previsualizarPDFCot(c){
+async function previsualizarPDFCot(c){
   const T=c.totales||[],provs2=c.proveedores||[],rows2=c.items||[];
-  const R2=[...provs2.map((p,i)=>({...p,total:T[i]||0,idx:i}))].filter(x=>x.total>0).sort((a,b)=>a.total-b.total);
-  pdfDataCache={empresa:c.empresa||'Mi Empresa',nro:c.nro_pedido,fecha:c.fecha,comprador:c.comprador,sector:c.sector,desc:c.descripcion,firma:c.firma,provs:provs2,rows:rows2,totals:T,selIdx:c.prov_sel_idx,bestIdx:c.best_idx,isChg:c.is_chg,motivo:c.motivo_chg||'',condPago:c.cond_pago,plazo:c.plazo,obs:c.obs,justif:c.justif,creadoPor:c.creado_por};
+  const cot = await obtenerCotizaciones();
+  pdfDataCache={empresa:c.empresa||'Mi Empresa',nro:c.nro_pedido,fecha:c.fecha,comprador:c.comprador,sector:c.sector,desc:c.descripcion,firma:c.firma,provs:provs2,rows:rows2,totals:T,selIdx:c.prov_sel_idx,bestIdx:c.best_idx,isChg:c.is_chg,motivo:c.motivo_chg||'',condPago:c.cond_pago,plazo:c.plazo,obs:c.obs,justif:c.justif,creadoPor:c.creado_por,cotizaciones:cot};
   renderPreview(pdfDataCache);
 }
 
 function renderPreview(d){
-  const T=d.totals,R2=[...d.provs.map((p,i)=>({name:p.name,total:T[i]||0,idx:i})).filter(x=>x.total>0)].sort((a,b)=>a.total-b.total);
-  const best=R2.length?R2[0].total:0,worst=R2.length?R2[R2.length-1].total:0,avg=R2.length?R2.reduce((s,x)=>s+x.total,0)/R2.length:0;
+  const cot = d.cotizaciones || {usd:{compra:0,venta:0},eur:{compra:0,venta:0},fecha:'',fuente:''};
+  const T=d.totals,R2=[...d.provs.map((p,i)=>({name:p.name,total:T[i]||0,moneda:p.moneda||'ARS',idx:i})).filter(x=>x.total>0)];
+  // Convertir todos a ARS para comparar/ranking
+  R2.forEach(x=>{ x.totalARS = (x.moneda==='ARS') ? x.total : convertirMoneda(x.total, x.moneda, 'ARS', cot); });
+  R2.sort((a,b)=>a.totalARS-b.totalARS);
+  const best=R2.length?R2[0].totalARS:0, worst=R2.length?R2[R2.length-1].totalARS:0, avg=R2.length?R2.reduce((s,x)=>s+x.totalARS,0)/R2.length:0;
   const sel=d.provs[d.selIdx]||{};
-  const itRows=d.rows.map((r,ri)=>{const tots=d.provs.map((_,pi)=>(d.provs[pi].prices[ri]||0)*parse(r.cant));const mn=tots.length?Math.min(...tots.filter(t=>t>0)):0;return `<tr><td>${ri+1}</td><td>${esc(r.desc||'—')}</td><td>${r.cant}</td><td>${esc(r.unidad||'—')}</td>${tots.map(t=>`<td class="${t===mn&&t>0?'pdf-best':''}" style="text-align:right">${t>0?fmt(t):'—'}</td>`).join('')}</tr>`;}).join('');
-  const condRows=d.provs.map((p,pi)=>`<tr style="${pi===d.selIdx?'background:#E6F4ED':''}"><td style="font-weight:${pi===d.selIdx?'700':'400'}">${esc(p.name)}${pi===d.selIdx?' ✓':''}</td><td style="text-align:right;font-weight:700;color:${T[pi]===best&&T[pi]>0?'#1A6B3C':'inherit'}">${T[pi]>0?fmt(T[pi]):'—'}</td><td>${esc(p.condPago||'—')}</td><td>${esc(p.plazo||'—')}</td><td style="font-size:9px">${esc(p.obs||'—')}</td></tr>`).join('');
-  const ranking=R2.map((x,i)=>`<div class="pdf-rk"><div style="width:20px;height:20px;border-radius:50%;background:${i===0?'#E6F4ED':i===1?'#FEF3C7':'#FEE2E2'};color:${i===0?'#1A6B3C':i===1?'#B45309':'#9B1C1C'};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0">${i+1}</div><div style="flex:1;min-width:0"><div style="font-size:10px;font-weight:600;margin-bottom:3px">${esc(x.name)}</div><div class="pdf-rk-bar"><div class="pdf-rk-fill" style="width:${Math.round((x.total/worst)*100)}%;background:${i===0?'#1A6B3C':i===1?'#B45309':'#9B1C1C'}"></div></div></div><div style="font-size:12px;font-weight:700;color:${i===0?'#1A6B3C':i===1?'#B45309':'#9B1C1C'}">${fmt(x.total)}</div></div>`).join('');
+  const hayMultiMoneda = d.provs.some(p=>(p.moneda||'ARS')!=='ARS');
+
+  // Helper: formatea celda con conversión a 3 monedas si corresponde
+  const celdaMonto = (monto, monedaOrig) => {
+    if(monto<=0) return '—';
+    if(!hayMultiMoneda || monedaOrig==='ARS' && !hayMultiMoneda){
+      return fmt(monto);
+    }
+    if(monedaOrig==='ARS'){
+      // Mostrar ARS + equivalentes en USD/EUR
+      const usd = convertirMoneda(monto,'ARS','USD',cot);
+      const eur = convertirMoneda(monto,'ARS','EUR',cot);
+      return `<div style="font-weight:700">${fmt(monto)}</div><div style="font-size:7.5px;color:#64748B">US$${fmtNum(usd)} · €${fmtNum(eur)}</div>`;
+    } else {
+      const ars = convertirMoneda(monto, monedaOrig, 'ARS', cot);
+      const otra = monedaOrig==='USD' ? convertirMoneda(monto,'USD','EUR',cot) : convertirMoneda(monto,'EUR','USD',cot);
+      const otraLbl = monedaOrig==='USD' ? '€'+fmtNum(otra) : 'US$'+fmtNum(otra);
+      return `<div style="font-weight:700">${monedaSimbolo(monedaOrig)}${fmtNum(monto)}</div><div style="font-size:7.5px;color:#64748B">${fmt(ars)} · ${otraLbl}</div>`;
+    }
+  };
+
+  const itRows=d.rows.map((r,ri)=>{
+    const tots=d.provs.map((_,pi)=>(d.provs[pi].prices[ri]||0)*parse(r.cant));
+    const totsARS=d.provs.map((p,pi)=>{ const t=tots[pi]; const m=p.moneda||'ARS'; return t>0?(m==='ARS'?t:convertirMoneda(t,m,'ARS',cot)):0; });
+    const mn=totsARS.length?Math.min(...totsARS.filter(t=>t>0)):0;
+    return `<tr><td>${ri+1}</td><td>${esc(r.desc||'—')}</td><td>${r.cant}</td><td>${esc(r.unidad||'—')}</td>${tots.map((t,pi)=>`<td class="${totsARS[pi]===mn&&totsARS[pi]>0?'pdf-best':''}" style="text-align:right">${celdaMonto(t, d.provs[pi].moneda||'ARS')}</td>`).join('')}</tr>`;
+  }).join('');
+
+  const condRows=d.provs.map((p,pi)=>{
+    const tARS = T[pi]>0 ? ((p.moneda||'ARS')==='ARS'?T[pi]:convertirMoneda(T[pi],p.moneda,'ARS',cot)) : 0;
+    return `<tr style="${pi===d.selIdx?'background:#E6F4ED':''}"><td style="font-weight:${pi===d.selIdx?'700':'400'}">${esc(p.name)}${pi===d.selIdx?' ✓':''}${p.moneda&&p.moneda!=='ARS'?` <span style="font-size:8px;color:#64748B">(${p.moneda})</span>`:''}</td><td style="text-align:right;font-weight:700;color:${tARS===best&&tARS>0?'#1A6B3C':'inherit'}">${T[pi]>0?celdaMonto(T[pi],p.moneda||'ARS'):'—'}</td><td>${esc(p.condPago||'—')}</td><td>${esc(p.plazo||'—')}</td><td style="font-size:9px">${esc(p.obs||'—')}</td></tr>`;
+  }).join('');
+
+  const ranking=R2.map((x,i)=>`<div class="pdf-rk"><div style="width:20px;height:20px;border-radius:50%;background:${i===0?'#E6F4ED':i===1?'#FEF3C7':'#FEE2E2'};color:${i===0?'#1A6B3C':i===1?'#B45309':'#9B1C1C'};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0">${i+1}</div><div style="flex:1;min-width:0"><div style="font-size:10px;font-weight:600;margin-bottom:3px">${esc(x.name)}${x.moneda!=='ARS'?` <span style="font-size:8px;color:#64748B">(${monedaSimbolo(x.moneda)}${fmtNum(x.total)})</span>`:''}</div><div class="pdf-rk-bar"><div class="pdf-rk-fill" style="width:${Math.round((x.totalARS/worst)*100)}%;background:${i===0?'#1A6B3C':i===1?'#B45309':'#9B1C1C'}"></div></div></div><div style="font-size:12px;font-weight:700;color:${i===0?'#1A6B3C':i===1?'#B45309':'#9B1C1C'}">${fmt(x.totalARS)}</div></div>`).join('');
+
+  const cotBox = hayMultiMoneda ? `
+    <div class="pdf-sec">Cotización del día — ${esc(cot.fuente||'Banco Nación')}</div>
+    <table class="pdf-tbl"><thead><tr><th>Moneda</th><th>Compra</th><th>Venta</th></tr></thead>
+    <tbody>
+      <tr><td>Dólar (USD)</td><td style="text-align:right">${fmtNum(cot.usd.compra)}</td><td style="text-align:right;font-weight:700">${fmtNum(cot.usd.venta)}</td></tr>
+      <tr><td>Euro (EUR)</td><td style="text-align:right">${fmtNum(cot.eur.compra)}</td><td style="text-align:right;font-weight:700">${fmtNum(cot.eur.venta)}</td></tr>
+    </tbody></table>
+    <div style="font-size:8px;color:#94A3B8;margin-top:3px">Cotización al ${cot.fecha?new Date(cot.fecha).toLocaleDateString('es-AR'):'—'}. Los montos se muestran en la moneda original del proveedor, con su equivalente en las otras dos monedas debajo.</div>` : '';
+
   document.getElementById('preview-page').innerHTML=`
     <div class="pdf-hdr"><div><h1>${esc(d.empresa)}</h1><div class="sub">Comparativa de cotizaciones · N° ${esc(d.nro)}</div></div>
       <div class="meta">Fecha: ${d.fecha}<br>Comprador: ${esc(d.comprador)}<br>Sector: ${esc(d.sector)}<br>Creado por: ${esc(d.creadoPor||'—')}</div></div>
     <div class="pdf-2col">
       <div>
         <div class="pdf-sec">Detalle de ítems cotizados</div>
-        <table class="pdf-tbl"><thead><tr><th>#</th><th>Descripción</th><th>Cant.</th><th>Un.</th>${d.provs.map(p=>`<th>${esc(p.name)}</th>`).join('')}</tr></thead>
+        <table class="pdf-tbl"><thead><tr><th>#</th><th>Descripción</th><th>Cant.</th><th>Un.</th>${d.provs.map(p=>`<th>${esc(p.name)}${p.moneda&&p.moneda!=='ARS'?` (${p.moneda})`:''}</th>`).join('')}</tr></thead>
         <tbody>${itRows}</tbody>
-        <tfoot><tr class="tot-r"><td colspan="4">TOTALES</td>${T.map(t=>`<td style="text-align:right">${t>0?fmt(t):'—'}</td>`).join('')}</tr></tfoot></table>
+        <tfoot><tr class="tot-r"><td colspan="4">TOTALES</td>${T.map((t,pi)=>`<td style="text-align:right">${t>0?celdaMonto(t,d.provs[pi].moneda||'ARS'):'—'}</td>`).join('')}</tr></tfoot></table>
         <div class="pdf-sec" style="margin-top:10px">Condiciones por proveedor</div>
         <table class="pdf-tbl"><thead><tr><th>Proveedor</th><th>Total</th><th>Cond. pago</th><th>Plazo</th><th>Obs.</th></tr></thead><tbody>${condRows}</tbody></table>
+        ${cotBox}
       </div>
       <div style="padding-left:14px">
-        <div class="pdf-sec">Ranking</div>${ranking}
+        <div class="pdf-sec">Ranking (equivalente ARS)</div>${ranking}
         <div class="pdf-sav"><div class="pdf-sav-row"><span>Ahorro menor vs. más caro:</span><span style="font-weight:700;color:#1A6B3C">${fmt(worst-best)} (${worst>0?((worst-best)/worst*100).toFixed(1):0}%)</span></div></div>
         ${d.isChg&&d.motivo?`<div style="background:#FEF3C7;border:1px solid #FCD34D;border-radius:5px;padding:8px 10px;margin-top:8px;font-size:9px"><strong>⚠ Cambio de proveedor:</strong> ${esc(d.motivo)}</div>`:''}
         <div class="pdf-sec">Decisión de compra</div>
         <div class="pdf-dec">
-          <div class="pdf-dec-row"><span><strong>Proveedor</strong></span><span style="font-weight:700;color:#1A6B3C">${esc(sel.name||'—')}</span></div>
-          <div class="pdf-dec-row"><span>Monto</span><span style="font-weight:700">${fmt(T[d.selIdx]||0)}</span></div>
+          <div class="pdf-dec-row"><span><strong>Proveedor</strong></span><span style="font-weight:700;color:#1A6B3C">${esc(sel.name||'—')}${sel.moneda&&sel.moneda!=='ARS'?` (${sel.moneda})`:''}</span></div>
+          <div class="pdf-dec-row"><span>Monto</span><span style="font-weight:700">${T[d.selIdx]>0?celdaMonto(T[d.selIdx],sel.moneda||'ARS'):'—'}</span></div>
           <div class="pdf-dec-row"><span>Cond. pago</span><span>${esc(d.condPago||'—')}</span></div>
           <div class="pdf-dec-row"><span>Plazo</span><span>${esc(d.plazo||'—')}</span></div>
           <div class="pdf-dec-row"><span>Obs.</span><span>${esc(d.obs||'—')}</span></div>
@@ -1447,6 +1497,26 @@ function renderPreview(d){
 function imprimirPDF(){
   if(!pdfDataCache){ alert('Sin datos para PDF.'); return; }
   const d=pdfDataCache;
+  const cot = d.cotizaciones || {usd:{compra:0,venta:0},eur:{compra:0,venta:0},fecha:'',fuente:''};
+  const hayMultiMoneda = d.provs.some(p=>(p.moneda||'ARS')!=='ARS');
+
+  // Texto de celda: monto en moneda original + equivalentes (multilinea)
+  const celdaTxt = (monto, monedaOrig) => {
+    if(monto<=0) return '—';
+    if(!hayMultiMoneda) return fmt(monto);
+    if(monedaOrig==='ARS'){
+      const usd=convertirMoneda(monto,'ARS','USD',cot), eur=convertirMoneda(monto,'ARS','EUR',cot);
+      return fmt(monto)+'\nUS$'+fmtNum(usd)+' / \u20AC'+fmtNum(eur);
+    } else {
+      const ars=convertirMoneda(monto,monedaOrig,'ARS',cot);
+      const otra= monedaOrig==='USD' ? convertirMoneda(monto,'USD','EUR',cot) : convertirMoneda(monto,'EUR','USD',cot);
+      const otraLbl = monedaOrig==='USD' ? '\u20AC'+fmtNum(otra) : 'US$'+fmtNum(otra);
+      return monedaSimbolo(monedaOrig)+fmtNum(monto)+'\n'+fmt(ars)+' / '+otraLbl;
+    }
+  };
+  // Total en ARS para comparar (ranking, mejor precio)
+  const totalARS = (monto, monedaOrig) => monto<=0?0:((monedaOrig==='ARS')?monto:convertirMoneda(monto,monedaOrig,'ARS',cot));
+
   const{jsPDF}=window.jspdf;
   const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});
   const PW=287,ml=8,mr=8,mt=8;
@@ -1460,26 +1530,45 @@ function imprimirPDF(){
   doc.text('Descripción: '+d.desc,PW-mr-4,mt+10.5,{align:'right'});
   const COL_L=PW*0.61,COL_R=PW*0.37,GAP_X=ml+COL_L+4;
   let YL=mt+20,YR=mt+20;
-  const nProv=d.provs.length,fixW=[8,50,10,10],rem=(COL_L-ml-fixW.reduce((a,b)=>a+b,0))/nProv;
+  const nProv=d.provs.length,fixW=[8,46,9,9],rem=(COL_L-ml-fixW.reduce((a,b)=>a+b,0))/nProv;
   doc.setFontSize(7);doc.setFont('helvetica','bold');doc.setTextColor(...AZ);
-  doc.text('ÍTEMS COTIZADOS',ml,YL);YL+=4;
-  const itHead=[['#','Descripción','Cant.','Un.',...d.provs.map(p=>p.name.substring(0,11))]];
-  const itRows2=d.rows.map((r,ri)=>{const tots=d.provs.map((_,pi)=>(d.provs[pi].prices[ri]||0)*parse(r.cant));return[String(ri+1),r.desc||'—',String(r.cant),r.unidad||'—',...tots.map(t=>t>0?fmt(t):'—')];});
-  doc.autoTable({head:itHead,body:[...itRows2,['','TOTALES','','',...d.totals.map(t=>t>0?fmt(t):'—')]],startY:YL,margin:{left:ml,right:mr+GAP_X-ml-COL_L+2},tableWidth:COL_L-ml,styles:{fontSize:7,cellPadding:2},headStyles:{fillColor:AZ,textColor:[255,255,255],fontStyle:'bold',fontSize:7},columnStyles:{0:{cellWidth:fixW[0],halign:'center'},1:{cellWidth:fixW[1]},2:{cellWidth:fixW[2],halign:'center'},3:{cellWidth:fixW[3],halign:'center'},...Object.fromEntries(d.provs.map((_,pi)=>[4+pi,{cellWidth:rem,halign:'right'}]))},didParseCell:(data)=>{if(data.row.index===itRows2.length){data.cell.styles.fontStyle='bold';data.cell.styles.fillColor=GR;}}});
+  doc.text('ÍTEMS COTIZADOS'+(hayMultiMoneda?'  (monto original / equiv. ARS · USD · EUR según moneda)':''),ml,YL);YL+=4;
+  const itHead=[['#','Descripción','Cant.','Un.',...d.provs.map(p=>p.name.substring(0,11)+((p.moneda&&p.moneda!=='ARS')?' ('+p.moneda+')':''))]];
+  const itRows2=d.rows.map((r,ri)=>{
+    const tots=d.provs.map((_,pi)=>(d.provs[pi].prices[ri]||0)*parse(r.cant));
+    return[String(ri+1),r.desc||'—',String(r.cant),r.unidad||'—',...tots.map((t,pi)=>celdaTxt(t, d.provs[pi].moneda||'ARS'))];
+  });
+  doc.autoTable({head:itHead,body:[...itRows2,['','TOTALES','','',...d.totals.map((t,pi)=>celdaTxt(t,d.provs[pi].moneda||'ARS'))]],startY:YL,margin:{left:ml,right:mr+GAP_X-ml-COL_L+2},tableWidth:COL_L-ml,styles:{fontSize:6.5,cellPadding:1.5,valign:'middle'},headStyles:{fillColor:AZ,textColor:[255,255,255],fontStyle:'bold',fontSize:6.5},columnStyles:{0:{cellWidth:fixW[0],halign:'center'},1:{cellWidth:fixW[1]},2:{cellWidth:fixW[2],halign:'center'},3:{cellWidth:fixW[3],halign:'center'},...Object.fromEntries(d.provs.map((_,pi)=>[4+pi,{cellWidth:rem,halign:'right'}]))},didParseCell:(data)=>{if(data.row.index===itRows2.length){data.cell.styles.fontStyle='bold';data.cell.styles.fillColor=GR;}}});
   YL=doc.lastAutoTable.finalY+4;
+  doc.setFontSize(7);doc.setFont('helvetica','bold');doc.setTextColor(...AZ);
   doc.text('CONDICIONES POR PROVEEDOR',ml,YL);YL+=4;
-  doc.autoTable({head:[['Proveedor','Total','Cond. pago','Plazo','Obs.']],body:d.provs.map((p,pi)=>[(pi===d.selIdx?'✓ ':'')+p.name,d.totals[pi]>0?fmt(d.totals[pi]):'—',p.condPago||'—',p.plazo||'—',p.obs||'—']),startY:YL,margin:{left:ml,right:mr+GAP_X-ml-COL_L+2},tableWidth:COL_L-ml,styles:{fontSize:7,cellPadding:2},headStyles:{fillColor:AZ,textColor:[255,255,255],fontSize:7},columnStyles:{0:{cellWidth:28},1:{cellWidth:18,halign:'right'},2:{cellWidth:30},3:{cellWidth:18},4:{cellWidth:COL_L-ml-94}},didParseCell:(data)=>{if(data.section==='body'&&data.row.index===d.selIdx){data.cell.styles.fillColor=VDL;data.cell.styles.fontStyle='bold';}}});
-  const R2=[...d.provs.map((p,i)=>({name:p.name,total:d.totals[i]||0})).filter(x=>x.total>0)].sort((a,b)=>a.total-b.total);
-  const best2=R2.length?R2[0].total:0,worst2=R2.length?R2[R2.length-1].total:0;
-  doc.text('RANKING',GAP_X,YR);YR+=4;
-  doc.autoTable({head:[['#','Proveedor','Total']],body:R2.map((x,i)=>[String(i+1),x.name,fmt(x.total)]),startY:YR,margin:{left:GAP_X,right:mr},tableWidth:COL_R,styles:{fontSize:8,cellPadding:2.5},headStyles:{fillColor:AZ,textColor:[255,255,255],fontSize:7},columnStyles:{0:{cellWidth:8,halign:'center'},1:{cellWidth:COL_R-30},2:{cellWidth:22,halign:'right',fontStyle:'bold'}},didParseCell:(data)=>{if(data.section==='body'){const i=data.row.index;data.cell.styles.fillColor=[VDL,NRL,[254,226,226]][Math.min(i,2)];data.cell.styles.textColor=[[...VD],[...NR],[155,28,28]][Math.min(i,2)];}}});
+  doc.autoTable({head:[['Proveedor','Total','Cond. pago','Plazo','Obs.']],body:d.provs.map((p,pi)=>[(pi===d.selIdx?'✓ ':'')+p.name+((p.moneda&&p.moneda!=='ARS')?' ('+p.moneda+')':''),d.totals[pi]>0?celdaTxt(d.totals[pi],p.moneda||'ARS'):'—',p.condPago||'—',p.plazo||'—',p.obs||'—']),startY:YL,margin:{left:ml,right:mr+GAP_X-ml-COL_L+2},tableWidth:COL_L-ml,styles:{fontSize:7,cellPadding:2},headStyles:{fillColor:AZ,textColor:[255,255,255],fontSize:7},columnStyles:{0:{cellWidth:30},1:{cellWidth:24,halign:'right'},2:{cellWidth:30},3:{cellWidth:18},4:{cellWidth:COL_L-ml-102}},didParseCell:(data)=>{if(data.section==='body'&&data.row.index===d.selIdx){data.cell.styles.fillColor=VDL;data.cell.styles.fontStyle='bold';}}});
+  YL=doc.lastAutoTable.finalY+4;
+
+  // Sección cotización del día (solo si hay multimoneda)
+  if(hayMultiMoneda){
+    doc.setFontSize(7);doc.setFont('helvetica','bold');doc.setTextColor(...AZ);
+    doc.text('COTIZACIÓN DEL DÍA — '+(cot.fuente||'Banco Nación').toUpperCase(),ml,YL);YL+=4;
+    doc.autoTable({head:[['Moneda','Compra','Venta']],body:[['Dólar (USD)',fmtNum(cot.usd.compra),fmtNum(cot.usd.venta)],['Euro (EUR)',fmtNum(cot.eur.compra),fmtNum(cot.eur.venta)]],startY:YL,margin:{left:ml,right:mr+GAP_X-ml-COL_L+2},tableWidth:70,styles:{fontSize:7,cellPadding:2},headStyles:{fillColor:AZ,textColor:[255,255,255],fontSize:7},columnStyles:{1:{halign:'right'},2:{halign:'right',fontStyle:'bold'}}});
+    doc.setFontSize(6);doc.setFont('helvetica','normal');doc.setTextColor(...TX2);
+    doc.text('Cotización al '+(cot.fecha?new Date(cot.fecha).toLocaleDateString('es-AR'):'—')+'. Fuente: '+(cot.fuente||'Banco Nación')+'.',ml,doc.lastAutoTable.finalY+4);
+  }
+
+  const R2=[...d.provs.map((p,i)=>({name:p.name,total:d.totals[i]||0,moneda:p.moneda||'ARS'})).filter(x=>x.total>0)];
+  R2.forEach(x=>{ x.totalARS = totalARS(x.total, x.moneda); });
+  R2.sort((a,b)=>a.totalARS-b.totalARS);
+  const best2=R2.length?R2[0].totalARS:0,worst2=R2.length?R2[R2.length-1].totalARS:0;
+  doc.setFontSize(7);doc.setFont('helvetica','bold');doc.setTextColor(...AZ);
+  doc.text('RANKING'+(hayMultiMoneda?' (equiv. ARS)':''),GAP_X,YR);YR+=4;
+  doc.autoTable({head:[['#','Proveedor','Total']],body:R2.map((x,i)=>[String(i+1),x.name+(x.moneda!=='ARS'?' ('+monedaSimbolo(x.moneda)+fmtNum(x.total)+')':''),fmt(x.totalARS)]),startY:YR,margin:{left:GAP_X,right:mr},tableWidth:COL_R,styles:{fontSize:7.5,cellPadding:2.5},headStyles:{fillColor:AZ,textColor:[255,255,255],fontSize:7},columnStyles:{0:{cellWidth:8,halign:'center'},1:{cellWidth:COL_R-30},2:{cellWidth:22,halign:'right',fontStyle:'bold'}},didParseCell:(data)=>{if(data.section==='body'){const i=data.row.index;data.cell.styles.fillColor=[VDL,NRL,[254,226,226]][Math.min(i,2)];data.cell.styles.textColor=[[...VD],[...NR],[155,28,28]][Math.min(i,2)];}}});
   YR=doc.lastAutoTable.finalY+3;
   doc.setFillColor(...GR);doc.rect(GAP_X,YR,COL_R,10,'F');doc.setFontSize(7);doc.setFont('helvetica','normal');doc.setTextColor(...TX2);
   doc.text('Ahorro menor vs. más caro:',GAP_X+3,YR+4);doc.setFont('helvetica','bold');doc.setTextColor(...VD);
   doc.text(fmt(worst2-best2)+' ('+(worst2>0?((worst2-best2)/worst2*100).toFixed(1):0)+'%)',GAP_X+COL_R-3,YR+4,{align:'right'});
   YR+=13;
   doc.setFontSize(7);doc.setFont('helvetica','bold');doc.setTextColor(...AZ);doc.text('DECISIÓN DE COMPRA',GAP_X,YR);YR+=4;
-  doc.autoTable({body:[['Proveedor seleccionado',(d.provs[d.selIdx]?.name||'—')],['Monto adjudicado',fmt(d.totals[d.selIdx]||0)],['Condición de pago',d.condPago||'—'],['Plazo de entrega',d.plazo||'—'],['Justificación',d.justif||'—'],['Creado por',d.creadoPor||'—']],startY:YR,margin:{left:GAP_X,right:mr},tableWidth:COL_R,styles:{fontSize:7.5,cellPadding:3},columnStyles:{0:{cellWidth:30,fontStyle:'bold',textColor:TX2},1:{cellWidth:COL_R-30}},theme:'plain',tableLineColor:BD,tableLineWidth:0.1,didParseCell:(data)=>{data.cell.styles.fillColor=VDL;}});
+  const selMon=(d.provs[d.selIdx]?.moneda)||'ARS';
+  doc.autoTable({body:[['Proveedor seleccionado',(d.provs[d.selIdx]?.name||'—')+(selMon!=='ARS'?' ('+selMon+')':'')],['Monto adjudicado',celdaTxt(d.totals[d.selIdx]||0,selMon).replace('\n',' / ')],['Condición de pago',d.condPago||'—'],['Plazo de entrega',d.plazo||'—'],['Justificación',d.justif||'—'],['Creado por',d.creadoPor||'—']],startY:YR,margin:{left:GAP_X,right:mr},tableWidth:COL_R,styles:{fontSize:7.5,cellPadding:3},columnStyles:{0:{cellWidth:30,fontStyle:'bold',textColor:TX2},1:{cellWidth:COL_R-30}},theme:'plain',tableLineColor:BD,tableLineWidth:0.1,didParseCell:(data)=>{data.cell.styles.fillColor=VDL;}});
   YR=doc.lastAutoTable.finalY+3;
   doc.setDrawColor(0,0,0);doc.line(GAP_X+2,YR+7,GAP_X+COL_R/2-4,YR+7);doc.line(GAP_X+COL_R/2+2,YR+7,GAP_X+COL_R-2,YR+7);
   doc.setFontSize(6.5);doc.setFont('helvetica','normal');doc.setTextColor(...TX2);
@@ -1498,13 +1587,6 @@ window.addEventListener('DOMContentLoaded', () => {
   if(saved){ try{ curUser=JSON.parse(saved); iniciarApp(); return; }catch(e){} }
   document.getElementById('login-wrap').style.display='flex';
 });
-</script>
-<script>
-if('serviceWorker' in navigator){
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(e => console.log('SW error:', e));
-  });
-}
 </script>
 </body>
 </html>

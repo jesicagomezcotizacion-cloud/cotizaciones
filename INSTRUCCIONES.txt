@@ -1,0 +1,94 @@
+════════════════════════════════════════════════════════════
+  SISTEMA DE COTIZACIONES — INSTALACIÓN COMPLETA
+════════════════════════════════════════════════════════════
+
+PASO 1 — CONFIGURAR SUPABASE (base de datos)
+─────────────────────────────────────────────
+1. Entrá a supabase.com con tu cuenta Google
+2. Abrí tu proyecto "cotizaciones"
+3. En el menú izquierdo → "SQL Editor" → "New query"
+4. Copiá TODO el contenido del archivo  supabase_setup.sql
+5. Pegalo en el editor y hacé clic en "Run"
+6. Tiene que decir "Success" — las tablas quedaron creadas
+
+7. Crear la contraseña del admin:
+   Abrí una nueva query y ejecutá esto (cambiá el email y pass):
+
+   UPDATE usuarios 
+   SET pass_hash = encode(digest('TU_CONTRASEÑA_AQUI', 'sha256'), 'hex')
+   WHERE email = 'admin@miempresa.com';
+
+   IMPORTANTE: reemplazá 'TU_CONTRASEÑA_AQUI' por tu contraseña real
+   y 'admin@miempresa.com' por el email que quieras usar como admin.
+
+
+PASO 2 — SUBIR A VERCEL (la URL pública)
+─────────────────────────────────────────
+Opción A — Sin GitHub (más simple):
+1. Entrá a vercel.com e iniciá sesión con Google
+2. En el dashboard, clic en "Add New → Project"
+3. Clic en "Browse" o arrastrá la carpeta con los 2 archivos:
+   - index.html
+   - vercel.json
+4. Clic en "Deploy"
+5. En 1 minuto te da una URL tipo:
+   https://cotizaciones-xxxx.vercel.app
+
+Opción B — Con GitHub:
+1. Subí los archivos a un repositorio de GitHub
+2. En Vercel, importá el repositorio
+3. Deploy automático
+
+
+PASO 3 — CREAR LOS USUARIOS
+─────────────────────────────
+1. Abrí la URL de Vercel en tu navegador
+2. Ingresá con el email y contraseña del admin que configuraste
+3. En el menú izquierdo → "Gestión usuarios"
+4. Clic en "+ Nuevo usuario"
+5. Completá nombre, email, contraseña y rol (Usuario)
+6. Clic en "Crear usuario"
+7. Repetí para cada persona del equipo (máx 4)
+
+
+PASO 4 — USAR LA APP
+─────────────────────
+- Cada persona abre la URL en su navegador
+- Ingresa con su email y contraseña
+- Listo — todo sincronizado en tiempo real
+
+
+CÓMO FUNCIONA CADA ROL
+────────────────────────
+ADMINISTRADOR:
+  ✓ Ve y edita las cotizaciones de TODOS
+  ✓ Gestión de usuarios (crear, activar, desactivar)
+  ✓ Ve toda la auditoría
+
+USUARIO NORMAL:
+  ✓ Crea sus propias cotizaciones
+  ✓ Ve el seguimiento de TODOS
+  ✓ Ve la auditoría completa
+  ✗ No puede gestionar usuarios
+
+AUDITORÍA (todos la ven):
+  → Queda registrado: quién hizo qué, cuándo, en qué pedido
+  → Cambios de proveedor: quién lo cambió y por qué
+
+
+PREGUNTAS FRECUENTES
+─────────────────────
+¿Se puede usar desde el celular?
+  Sí, la URL funciona desde cualquier dispositivo con navegador.
+
+¿Se puede cambiar la URL?
+  Sí, en Vercel podés configurar un dominio propio (ej: cotizaciones.tuempresa.com)
+
+¿Los datos son privados?
+  Sí, solo las personas con usuario y contraseña pueden acceder.
+
+¿Tiene costo?
+  No. Supabase y Vercel son gratuitos para este uso.
+  Supabase gratuito: hasta 500MB de datos y 50.000 filas.
+  Vercel gratuito: hosting ilimitado para proyectos así.
+════════════════════════════════════════════════════════════
